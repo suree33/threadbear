@@ -453,6 +453,11 @@ const MORE_RUNNERS = process.env.MOCK_MORE_RUNNERS ? [
 let runnerOrder = ['runner_mock', BRUCE, ...MORE_RUNNERS.map((r) => r.id)];
 // accounts.yearToken's one flow, for mac-mini's claude-main.
 let yearTokenFlow;
+// Use this Mac's Claude logins (runners.sharedLogins, runners.shareLogins):
+// mac-mini's switch, and its send held by mock.holdShares until
+// mock.releaseShares, so the spinner can be looked at.
+let loginShare;
+let shareHold;
 // Files on mac-mini's Mac that its threads name (docs/protocol/runners.md, "Other
 // runners' threads"): the picture is a real PNG, the rest text. None of
 // these paths exist on this Mac.
@@ -977,7 +982,7 @@ async function handle(client, { id, method, params = {} }) {
 }
 
 async function dispatch(client, method, p) {
-  if (coordinatorRequest && (method.startsWith('coordinators.') || ['mock.coordinatorFinish', 'mock.coordinatorVerify', 'mock.coordinatorNotesChanged'].includes(method))) {
+  if (coordinatorRequest && (method.startsWith('coordinators.') || ['mock.coordinatorFinish', 'mock.coordinatorVerify', 'mock.coordinatorNotesChanged', 'mock.coordinatorAsk', 'mock.coordinatorTaskBoard'].includes(method))) {
     if (method.startsWith('coordinators.') && !settings.experiments.find((e) => e.id === 'coordinators')?.on) throw rpcError(-32602, 'The coordinator experiment is off.');
     return coordinatorRequest(method, p);
   }
@@ -1949,6 +1954,29 @@ async function dispatch(client, method, p) {
       if (p.runnerId !== BRUCE) throw rpcError(-32000, `No logins known for ${p.runnerId}`);
       return { accounts: publicAccounts().filter((a) => a.id === 'claude-main' || a.id === 'codex-main'), pools: [], defaults: { ...defaults, poolId: undefined, accountId: 'claude-main', cwd: '/Users/alex/code/misc' } };
     }
+    // Use a reset (protocol `accounts.useReset`): a moment's wait so the
+    // spinner shows, then the login with its room back, one reset fewer and
+    // no hint, as the runner's reading after it has it. Nothing left is
+    // Codex's noCredit.
+    case 'accounts.useReset': {
+      const a = accounts.find((x) => x.id === p.accountId);
+      if (!a) throw rpcError(-32010, `No login ${p.accountId} on this runner.`);
+      if (a.provider !== 'codex') throw rpcError(-32602, 'Only Codex logins have usage resets.');
+      await new Promise((r) => setTimeout(r, 600));
+      const left = a.usage?.resets?.available ?? 0;
+      if (left < 1) return { outcome: 'noCredit' };
+      a.usage = {
+        ...a.usage,
+        readAt: new Date().toISOString(),
+        blocked: false,
+        windows: (a.usage.windows ?? []).map((w) => (w.kind === 'five_hour' || w.kind === 'weekly' ? { ...w, remainingPercent: 100 } : w)),
+        resets: { ...a.usage.resets, available: left - 1, readAt: new Date().toISOString() },
+      };
+      delete a.usage.blocked;
+      delete a.resetHint;
+      broadcast('accounts.updated', { accounts: publicAccounts() });
+      return { outcome: 'reset', account: publicAccounts().find((x) => x.id === a.id) };
+    }
     case 'accounts.yearToken': {
       // Year-long token… for mac-mini's login (docs/protocol.md): starting,
       // then its page at the next look; a code with the page's state is
@@ -1972,6 +2000,21 @@ async function dispatch(client, method, p) {
       }
       if (t.state !== 'waiting') yearTokenFlow = { state: 'starting' };
       return { state: yearTokenFlow.state, ...(yearTokenFlow.state === 'waiting' ? { url: page } : {}) };
+    }
+    case 'runners.sharedLogins':
+      if (oldRunner) throw rpcError(-32601, `Unknown method ${method}`);
+      return { runners: loginShare ? [loginShare] : [] };
+    case 'runners.shareLogins': {
+      // No tokens anywhere: what the main Mac's runner would answer once
+      // mac-mini had set them up (docs/protocol/settings.md, "This Mac's
+      // logins on another runner").
+      if (oldRunner) throw rpcError(-32601, `Unknown method ${method}`);
+      if (p.runnerId !== BRUCE) throw rpcError(-32602, "That isn't another of your runners.");
+      if (shareHold) await shareHold.promise;
+      loginShare = p.on
+        ? { runnerId: BRUCE, on: true, state: 'ok', at: iso(), logins: [{ email: 'me@example.com', state: 'added', accountId: 'claude-1' }, { email: 'alex@example.com', state: 'here', accountId: 'claude-main' }] }
+        : undefined;
+      return loginShare ?? { runnerId: BRUCE, on: false, state: 'off' };
     }
     case 'runners.setOrder': {
       if (oldRunner) throw rpcError(-32601, `Unknown method ${method}`);
@@ -2407,6 +2450,16 @@ async function dispatch(client, method, p) {
       moveHold = { promise, release };
       return { ok: true };
     }
+    case 'mock.holdShares': {
+      let release;
+      const promise = new Promise((r) => { release = r; });
+      shareHold = { promise, release };
+      return { ok: true };
+    }
+    case 'mock.releaseShares':
+      shareHold?.release();
+      shareHold = undefined;
+      return { ok: true };
     case 'mock.holdTokens': {
       let release;
       const promise = new Promise((r) => { release = r; });

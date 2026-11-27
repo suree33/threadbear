@@ -110,7 +110,15 @@ export type AccountUsage = {
 
 // A Codex login's free "Full reset" credits, each of which restores its
 // 5-hour and weekly limits at once. nextExpiresAt: the soonest one to expire.
-export type UsageResets = { available: number; nextExpiresAt?: string };
+// readAt: when this count was read, on whichever runner read it, so the
+// newest read wins wherever the login is signed in.
+export type UsageResets = { available: number; nextExpiresAt?: string; readAt?: string };
+
+// A usage reset worth using now (docs/protocol/settings.md, "Telling Mike
+// about resets"), worked out by reset-hint.ts alone. out: the login is out
+// of room. expiring: the soonest reset expires within 3 days and the week
+// is used enough that a reset buys something back.
+export type ResetHint = { why: 'out' | 'expiring'; available: number; nextExpiresAt?: string };
 
 export type Account = {
   id: string;
@@ -142,6 +150,9 @@ export type Account = {
   // not its 28-day sign-in. madeAt, when known, is when; loginEndsAt is
   // then a year on. The token itself never leaves the runner.
   yearToken?: { madeAt?: string };
+  // A usage reset worth using now (reset-hint.ts); absent when there's
+  // nothing to say.
+  resetHint?: ResetHint;
 };
 
 export type CliPolicy = 'auto' | 'notify' | 'off';
@@ -964,7 +975,7 @@ export type EventBody =
       review?: LabReviewLedger;
     }
   // The ticks on a card of asks, the whole set each time. Outside any turn.
-  | { type: 'asks.ticked'; asksSeq: number; ticked: number[] }
+  | { type: 'asks.ticked'; asksSeq: number; ticked: number[]; resolved?: number[] }
   // wake: a background task's notification that went into the running
   // turn, which opens a turn that's had its end_turn again (needs.ts,
   // takenEndTurn).
@@ -1016,7 +1027,7 @@ export type NeedsWho = 'you' | 'nothing';
 // (suggested, an index into options) marked; he can always write his own.
 // optionNotes: with one reply, what each option does if Mike picks it, in
 // the options' order ("" for none); the card draws them under the labels.
-export type Ask = { action: string; where?: string; reply?: string; why?: string; options?: string[]; optionNotes?: string[]; suggested?: number; links?: AskLink[] };
+export type Ask = { action: string; taskId?: string; where?: string; reply?: string; why?: string; options?: string[]; optionNotes?: string[]; suggested?: number; links?: AskLink[] };
 // Somewhere to go to do or judge an ask: a web page, or a file or folder
 // on this Mac (an absolute or ~ path). The app shows each as a button.
 export type AskLink = { title: string; url: string };

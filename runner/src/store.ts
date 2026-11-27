@@ -66,6 +66,7 @@ const OBJECTS = ['wakeCeiling', 'needs', 'looseEnds', 'stoppedWork', 'stoppedMid
 const NESTED: [string, string, 'object' | 'string' | 'number'][] = [
   ['needs', 'asks', 'object'],
   ['needs', 'ticked', 'number'],
+  ['needs', 'resolved', 'number'],
   ['needs', 'open', 'string'],
   ['needs', 'next', 'string'],
   ['looseEnds', 'ends', 'object'],
@@ -87,6 +88,7 @@ function listOf(v: unknown, kind: 'object' | 'string' | 'number'): unknown[] | u
 }
 export function normaliseRecord(rec: Record<string, unknown>): boolean {
   const before = JSON.stringify(rec);
+  if (!rec.model || (rec.explicitModel !== 'pickerId' && rec.explicitModel !== 'modelId' && rec.explicitModel !== 'unresolved')) delete rec.explicitModel;
   for (const k of OBJECTS) if (rec[k] !== undefined && !isObject(rec[k])) delete rec[k];
   for (const [k, kind] of [...OBJECT_LISTS.map((k) => [k, 'object'] as const), ...STRING_LISTS.map((k) => [k, 'string'] as const), ...NUMBER_LISTS.map((k) => [k, 'number'] as const)]) {
     if (rec[k] === undefined) continue;
@@ -197,6 +199,9 @@ export type ThreadRecord = {
   stoppedWorkWakes?: number;
   provider: Provider;
   model?: string;
+  // The requested model survived validation. Defaults and older records
+  // that didn't save its origin keep the usual pool spillover.
+  explicitModel?: 'pickerId' | 'modelId' | 'unresolved';
   effort?: EffortLevel;
   modelInUse?: string; // full id the CLI ran the last turn on
   effortInUse?: EffortLevel; // the level the CLI reported for the last turn
@@ -349,7 +354,7 @@ export type ThreadRecord = {
   // its turn.completed and which of its asks he has ticked.
   // (A record from 11 to 13 Nov 2026 may also hold `open`, the agent's own
   // lines for the done card: nothing reads it now.)
-  needs?: { seq: number; needs: NeedsWho; asks?: Ask[]; ticked?: number[]; afterJobs?: string[]; next?: string[]; nextPick?: 'one'; nextSuggested?: number };
+  needs?: { seq: number; needs: NeedsWho; asks?: Ask[]; ticked?: number[]; resolved?: number[]; afterJobs?: string[]; next?: string[]; nextPick?: 'one'; nextSuggested?: number };
   // Set when the folder or account changes, or the record had to be
   // rebuilt; the next turn starts a new native session with a note.
   // lost: the session to resume couldn't be found (never saved; only set

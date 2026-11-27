@@ -498,4 +498,15 @@
 // 103: thread rows can carry nextPick ("one") and nextSuggested (index into
 //    next) for mutually exclusive done-card follow-ups. A runner sends them
 //    only to a backend of 103 or later; older apps ignore them.
-export const API_VERSION = 103;
+// 104: an accounts row can carry `resetHint` (why a usage reset is worth
+//    using now, how many are left, when the soonest expires) and
+//    `usage.resets` with its `readAt`, so other runners merge the newest read
+//    of a login's resets and the phone, the website and another Mac draw the
+//    hint. relay:queueCommand's `call` takes accounts.useReset, the Mac's Use
+//    a reset for a login only that runner has. A runner sends the fields only
+//    to a backend of 104 or later.
+// 105: relay:queueCommand's `call` takes logins.sealKey and logins.share,
+//    the Runners panel's Use this Mac's Claude logins (docs/protocol/settings.md,
+//    "This Mac's logins on another runner"): owner key only, and a share
+//    carries each login sealed to that runner's key, never in the clear.
+export const API_VERSION = 105;

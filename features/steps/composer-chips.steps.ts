@@ -36,6 +36,24 @@ Then('the {string} menu has no row {string}', async function (this: ThreadbearWo
   assert.fail(`the ${menu} menu still has "${row}":\n${lines.join('\n')}`);
 });
 
+// A login's line in a login list, with what follows its usage (a usage
+// reset worth using: "[2 resets left: Use a reset]"). Waits, as the list
+// follows the runner's accounts.updated.
+for (const [step, want] of [
+  ['the {string} menu has a line ending {string}', true],
+  ['the {string} menu has no line ending {string}', false],
+] as const) {
+  Then(step, async function (this: ThreadbearWorld, menu: string, end: string) {
+    let lines: string[] = [];
+    for (let tries = 0; tries < 40; tries += 1) {
+      lines = await menuLines(this, menu);
+      if (lines.some((l) => l.endsWith(end)) === want) return;
+      await sleep(150);
+    }
+    assert.fail(`the ${menu} menu ${want ? 'has no' : 'still has a'} line ending "${end}":\n${lines.join('\n')}`);
+  });
+}
+
 // The model chip clicked, as a person does, which opens its popover.
 When('I open the model picker', async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'composer-menu', menu: 'model', show: true });
@@ -78,6 +96,43 @@ Given('the runner also has logins outside any pool', async function (this: Threa
       id: 'codex-solo', provider: 'codex', title: 'Codex · solo-codex@example.com', email: 'solo-codex@example.com',
       configDir: '~/.codex-solo', defaultModel: codex.defaultModel, models: codex.models,
       usage: { readAt, source: 'live', windows: [{ kind: 'weekly', title: 'Weekly', remainingPercent: 52 }] },
+    },
+  ];
+  await this.app.do({ cmd: 'mock', method: 'accounts', params: { accounts: [...accounts, ...extra] } });
+  let lines: string[] = [];
+  for (let tries = 0; tries < 40; tries += 1) {
+    lines = await menuLines(this, 'model');
+    if (lines.some((l) => l.startsWith('# [ ] No pool'))) return;
+    await sleep(150);
+  }
+  assert.fail(`No pool tab didn't appear:\n${lines.join('\n')}`);
+});
+
+Given('the runner also has a Gemini login and an OpenCode login', async function (this: ThreadbearWorld) {
+  const out = await this.app.do({ cmd: 'mock', method: 'accounts', params: {} });
+  type MockAccount = { id: string; provider: string };
+  const { accounts } = JSON.parse(out.slice(out.indexOf('{'))) as { accounts: MockAccount[] };
+  const extra = [
+    {
+      id: 'antigravity-main',
+      provider: 'antigravity',
+      title: 'Gemini',
+      configDir: '~/.gemini',
+      defaultModel: 'gemini-4-neon',
+      models: [
+        { id: 'gemini-4-neon', model: 'gemini-4-neon', title: 'Gemini 4 Neon', effortLevels: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'high' },
+        { id: 'gemini-3.8-flash', model: 'gemini-3.8-flash', title: 'Gemini 3.8 Flash', effortLevels: ['low', 'medium', 'high'], defaultEffort: 'high' },
+      ],
+    },
+    {
+      id: 'opencode-main',
+      provider: 'opencode',
+      title: 'OpenCode',
+      configDir: '~/.config/opencode',
+      models: [
+        { id: 'opencode/gpt-6-astra', model: 'opencode/gpt-6-astra', title: 'GPT-6 Astra', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+        { id: 'opencode/big-pickle', model: 'opencode/big-pickle', title: 'Big Pickle' },
+      ],
     },
   ];
   await this.app.do({ cmd: 'mock', method: 'accounts', params: { accounts: [...accounts, ...extra] } });

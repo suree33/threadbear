@@ -2,10 +2,8 @@
 // composer. Only its project link and helper-owned work live here.
 use crate::app::Threadbear;
 use crate::call;
-use crate::style::px;
-use gpui_kit::component::dialog::DialogButtonProps;
-use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{v_flex, WindowExt as _};
+use gpui_kit::component::input::InputState;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{json, Value};
@@ -19,7 +17,7 @@ pub(crate) enum Tab {
     #[default]
     Conversation,
     Activity,
-    Todos,
+    Tasks,
     Threads,
 }
 
@@ -27,7 +25,7 @@ impl Tab {
     pub(crate) const ALL: [Self; 4] = [
         Self::Conversation,
         Self::Activity,
-        Self::Todos,
+        Self::Tasks,
         Self::Threads,
     ];
 
@@ -35,10 +33,23 @@ impl Tab {
         match self {
             Self::Conversation => "Conversation",
             Self::Activity => "Activity",
-            Self::Todos => "To-dos",
+            Self::Tasks => "Tasks",
             Self::Threads => "Threads",
         }
     }
+}
+
+pub(crate) struct UndoLoop {
+    pub(crate) project_id: String,
+    pub(crate) loop_id: String,
+    pub(crate) title: String,
+}
+
+pub(crate) struct LoopReplyDraft {
+    pub(crate) project_id: String,
+    pub(crate) loop_id: String,
+    pub(crate) close: bool,
+    pub(crate) input: Entity<InputState>,
 }
 
 #[derive(Default)]
@@ -53,8 +64,17 @@ pub(crate) struct CoordinatorsState {
     pub(crate) setup_error: Option<String>,
     pub(crate) saved_picks: Option<threadbear_core::new_thread::NewThreadPicks>,
     pub(crate) busy: HashSet<String>,
+    pub(crate) agent_memory_open: HashSet<String>,
+    pub(crate) undo_loop: Option<UndoLoop>,
+    pub(crate) replying_loop: Option<LoopReplyDraft>,
+    pub(crate) loops_scroll: ScrollHandle,
     pub(crate) document_scroll: ScrollHandle,
+    pub(crate) memory_scroll: ScrollHandle,
     pub(crate) work_scroll: ScrollHandle,
+    pub(crate) task_boards: std::collections::HashMap<String, crate::coordinator_tasks::BoardUi>,
+    /// The open home's width, measured as it's drawn, for whether its tabs
+    /// fit in the bar (coordinator_home.rs).
+    pub(crate) home_width: std::rc::Rc<std::cell::Cell<f32>>,
 }
 
 impl Threadbear {
@@ -262,7 +282,7 @@ impl Threadbear {
         .detach();
     }
 
-    fn replace_coordinator(&mut self, value: &Value, cx: &mut Context<Self>) {
+    pub(crate) fn replace_coordinator(&mut self, value: &Value, cx: &mut Context<Self>) {
         if let Some(coordinator) = Coordinator::decode(value) {
             let was_loading = self.coordinators.loading;
             self.coordinators.generation += 1;
@@ -284,77 +304,247 @@ impl Threadbear {
         }
     }
 
-    pub(crate) fn add_coordinator_task(
-        &mut self,
-        project: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let title = cx.new(|cx| InputState::new(window, cx).placeholder("What needs doing?"));
-        let done =
-            cx.new(|cx| InputState::new(window, cx).placeholder("What does finished look like?"));
-        let app = cx.weak_entity();
-        let (project, typed, outcome) = (project.to_owned(), title.clone(), done);
-        window.open_alert_dialog(cx, move |dialog, _, _| {
-            let (app, project, title, done) =
-                (app.clone(), project.clone(), typed.clone(), outcome.clone());
-            dialog
-                .title("Add a to-do")
-                .width(px(430.))
-                .child(
-                    v_flex()
-                        .gap(px(12.))
-                        .child(Input::new(&typed))
-                        .child(Input::new(&outcome)),
-                )
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Add")
-                        .show_cancel(true),
-                )
-                .on_ok(move |_, _, cx| {
-                    let title = title.read(cx).value().trim().to_owned();
-                    let done = done.read(cx).value().trim().to_owned();
-                    if title.is_empty() || done.is_empty() {
-                        return false;
-                    }
-                    app.update(cx, |this, cx| {
-                        this.send_coordinator_task(&project, title, done, cx)
-                    })
-                    .ok();
-                    true
-                })
-        });
-        window.focus(&title.read(cx).focus_handle(cx), cx);
-        crate::web_panels::keyboard_to_app(window);
+    pub(crate) fn agent_memory_open(&self, project_id: &str) -> bool {
+        self.coordinators.agent_memory_open.contains(project_id)
+            || self.projects.editing.as_ref().is_some_and(|e| {
+                e.project == project_id && e.field == threadbear_core::projects::TextField::Notes
+            })
     }
 
-    fn send_coordinator_task(
+    pub(crate) fn toggle_agent_memory(&mut self, project_id: &str, cx: &mut Context<Self>) {
+        let editing_notes = self.projects.editing.as_ref().is_some_and(|e| {
+            e.project == project_id && e.field == threadbear_core::projects::TextField::Notes
+        });
+        if self.coordinators.agent_memory_open.contains(project_id) {
+            if !editing_notes {
+                self.coordinators.agent_memory_open.remove(project_id);
+            }
+        } else {
+            self.coordinators
+                .agent_memory_open
+                .insert(project_id.to_owned());
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn close_coordinator_loop(
         &mut self,
-        project: &str,
+        project_id: &str,
+        loop_id: &str,
         title: String,
-        done: String,
         cx: &mut Context<Self>,
     ) {
-        let key = format!("task:{project}");
+        let key = format!("loop:{loop_id}");
         if !self.coordinators.busy.insert(key.clone()) {
             return;
         }
+        if self
+            .coordinators
+            .replying_loop
+            .as_ref()
+            .is_some_and(|draft| draft.project_id == project_id && draft.loop_id == loop_id)
+        {
+            self.coordinators.replying_loop = None;
+        }
         let client = self.client.clone();
-        let params = json!({"projectId":project,"title":title,"doneWhen":done});
+        let params = json!({"projectId": project_id, "loopId": loop_id});
+        let project_id = project_id.to_owned();
+        let loop_id = loop_id.to_owned();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = call(client, "coordinators.addTask", params).await;
+            let result = call(client, "coordinators.closeLoop", params).await;
             this.update(cx, |this, cx| {
                 this.coordinators.busy.remove(&key);
                 match result {
-                    Ok(value) => this.replace_coordinator(&value["coordinator"], cx),
-                    Err(error) => this.show_error(error.message, cx),
+                    Ok(value) => {
+                        this.replace_coordinator(&value["coordinator"], cx);
+                        this.coordinators.undo_loop = Some(UndoLoop {
+                            project_id,
+                            loop_id,
+                            title,
+                        });
+                    }
+                    Err(error) => {
+                        this.show_error(error.message, cx);
+                        this.load_coordinators(cx);
+                    }
                 }
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    pub(crate) fn reopen_coordinator_loop(
+        &mut self,
+        project_id: &str,
+        loop_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let key = format!("loop:{loop_id}");
+        if !self.coordinators.busy.insert(key.clone()) {
+            return;
+        }
+        let client = self.client.clone();
+        let params = json!({"projectId": project_id, "loopId": loop_id});
+        let loop_id = loop_id.to_owned();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = call(client, "coordinators.reopenLoop", params).await;
+            this.update(cx, |this, cx| {
+                this.coordinators.busy.remove(&key);
+                match result {
+                    Ok(value) => {
+                        this.replace_coordinator(&value["coordinator"], cx);
+                        if this
+                            .coordinators
+                            .undo_loop
+                            .as_ref()
+                            .is_some_and(|undo| undo.loop_id == loop_id)
+                        {
+                            this.coordinators.undo_loop = None;
+                        }
+                    }
+                    Err(error) => {
+                        this.show_error(error.message, cx);
+                        this.load_coordinators(cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn dismiss_undo_loop(&mut self, cx: &mut Context<Self>) {
+        self.coordinators.undo_loop = None;
+        cx.notify();
+    }
+
+    pub(crate) fn start_reply_coordinator_loop(
+        &mut self,
+        project_id: &str,
+        loop_id: &str,
+        close: bool,
+        placeholder: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let placeholder = placeholder.to_owned();
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        let focus = input.read(cx).focus_handle(cx);
+        self.coordinators.replying_loop = Some(LoopReplyDraft {
+            project_id: project_id.to_owned(),
+            loop_id: loop_id.to_owned(),
+            close,
+            input,
+        });
+        window.focus(&focus, cx);
+        crate::web_panels::keyboard_to_app(window);
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_reply_coordinator_loop(&mut self, cx: &mut Context<Self>) {
+        self.coordinators.replying_loop = None;
+        cx.notify();
+    }
+
+    pub(crate) fn submit_reply_coordinator_loop(&mut self, cx: &mut Context<Self>) {
+        let Some((project_id, loop_id, close, text)) =
+            self.coordinators.replying_loop.as_ref().map(|draft| {
+                (
+                    draft.project_id.clone(),
+                    draft.loop_id.clone(),
+                    draft.close,
+                    draft.input.read(cx).value().to_string(),
+                )
+            })
+        else {
+            return;
+        };
+        self.send_coordinator_loop_reply(&project_id, &loop_id, text, close, cx);
+    }
+
+    pub(crate) fn send_coordinator_loop_reply(
+        &mut self,
+        project_id: &str,
+        loop_id: &str,
+        text: String,
+        close: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let key = format!("loop:{loop_id}");
+        if !self.coordinators.busy.insert(key.clone()) {
+            return;
+        }
+        let client = self.client.clone();
+        let params = json!({
+            "projectId": project_id,
+            "loopId": loop_id,
+            "text": trimmed,
+            "close": close,
+        });
+        let loop_id = loop_id.to_owned();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = call(client, "coordinators.replyLoop", params).await;
+            this.update(cx, |this, cx| {
+                this.coordinators.busy.remove(&key);
+                match result {
+                    Ok(value) => {
+                        this.replace_coordinator(&value["coordinator"], cx);
+                        if this
+                            .coordinators
+                            .replying_loop
+                            .as_ref()
+                            .is_some_and(|draft| draft.loop_id == loop_id)
+                        {
+                            this.coordinators.replying_loop = None;
+                        }
+                        if this
+                            .coordinators
+                            .undo_loop
+                            .as_ref()
+                            .is_some_and(|undo| undo.loop_id == loop_id)
+                        {
+                            this.coordinators.undo_loop = None;
+                        }
+                    }
+                    Err(error) => {
+                        this.show_error(error.message, cx);
+                        this.load_coordinators(cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn jump_to_coordinator_loop(
+        &mut self,
+        source_seq: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.coordinators.tab = Tab::Conversation;
+        self.close_subagent(cx);
+        if let Some(pane) = self.pane.clone() {
+            pane.update(cx, |pane, cx| {
+                if let Some(seq) = source_seq {
+                    pane.reveal_seq(seq, window, cx);
+                } else {
+                    pane.focus_composer(window, cx);
+                }
+            });
+        }
+        cx.notify();
     }
 }

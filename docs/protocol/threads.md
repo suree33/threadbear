@@ -679,9 +679,13 @@ its wakes rarely had anything to say. A wait the agent asks for itself
 When a turn finishes for good (completed, `needs: "nothing"`, nothing
 queued or running, no card waiting, no lab review of it started or owed,
 and not putting itself away with `archive`, `snooze` or `waitFor`), and the
-thread's `startedBy.kind` is `thread`, its `next` is empty and Mike has had
-nothing to do with it, the runner gathers its loose ends as the done card
-does (above). If nothing is left at all
+thread's `startedBy.kind` is `thread`, it isn't `detached`, its `next` is
+empty and Mike has had nothing to do with it, the runner gathers its loose
+ends as the done card does (above). A `detached` thread is left in the
+inbox. `create_thread`'s `nested: false` is Mike asking for a thread of his
+own about something else, and the reply is often what he wanted to read (26
+Nov 2026: the daily brief started a perpetual spinach lookup that way, and
+quiet inbox archived it before he saw where to buy it). If nothing is left at all
 (no `scheduled` either), it's archived (`archivedBy: "threadbear"`) after a
 `system.note`: "Archived: another thread started this one, and it finished
 with nothing left for you." If all that's left is threads it started
@@ -777,10 +781,13 @@ and no rule's guess is among them. Opus itself: when only Haiku answered,
 or a pool with no Claude login had another agent answer on its own default
 (its `by` then says `<provider> default on <login>`), nothing happens. Nor
 for a thread that's starred, `keptOut` (brought back out of the archive by
-hand once), another lab's review, has a design review waiting on Mike, a
-reminder he set himself (started by the tool `X bookmarks`: a bookmarked
-post is something he means to look into), or whose done card he has
-already seen (`lastSeenSeq >= seq`: he had it open as it finished). The checks `settleQuietly` makes are made again, as the
+hand once), `detached` (he asked for it as its own thread; the model treats
+a report from another thread as a skip, which is how the 26 Nov perpetual
+spinach lookup could have been hidden again), another lab's review, has a
+design review waiting on Mike, a reminder he set himself (started by the
+tool `X bookmarks`: a bookmarked post is something he means to look into),
+or whose done card he has already seen (`lastSeenSeq >= seq`: he had it
+open as it finished). The checks `settleQuietly` makes are made again, as the
 models took a moment: no turn, edit or queued message, still `finished`,
 the done card still the last, the thread still in the inbox, and no thread
 it started gone back to work. Then a `system.note` ("Archived by Quiet inbox on <when>: it finished
